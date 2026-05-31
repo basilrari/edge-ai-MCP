@@ -22,6 +22,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 from mavsdk import System
 from mavsdk.offboard import OffboardError, VelocityBodyYawspeed, PositionNedYaw
+from mavsdk.mavlink_direct import MavlinkMessage
 
 
 # ─── MCP Server ───────────────────────────────────────────────────────────────
@@ -35,12 +36,51 @@ Then arm, takeoff, fly, land, etc.
 
 All position tools use GPS coordinates (lat/lon/alt AMSL).
 Velocity tools use body-frame (forward/right/down).
+
+For camera/gimbal: take control first with gimbal_take_control().
+For landing gear: deployed by default on takeoff, retract in flight.
 """,
 )
 
 drone: Optional[System] = None
 connected = False
 CONNECTION_STRING = "udp://:14550"  # Default
+
+
+# ─── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _require_connection() -> str | None:
+    """Return None if OK, or error string if not connected."""
+    global drone
+    if not drone or not connected:
+        return "Not connected. Call connect() first."
+    return None
+
+
+async def _send_mavlink_command(command: int, param1: float = 0, param2: float = 0,
+                                param3: float = 0, param4: float = 0,
+                                param5: float = 0, param6: float = 0,
+                                param7: float = 0) -> None:
+    """Send a raw MAVLink COMMAND_LONG via mavlink_direct."""
+    msg = MavlinkMessage(
+        message_name="COMMAND_LONG",
+        system_id=255,
+        component_id=0,
+        target_system_id=1,
+        target_component_id=1,
+        fields_json=json.dumps({
+            "command": command,
+            "confirmation": 0,
+            "param1": param1,
+            "param2": param2,
+            "param3": param3,
+            "param4": param4,
+            "param5": param5,
+            "param6": param6,
+            "param7": param7,
+        }),
+    )
+    await drone.mavlink_direct.send_message(msg)
 
 
 # ─── Connection Management ────────────────────────────────────────────────────
@@ -107,9 +147,8 @@ async def is_connected() -> bool:
 @mcp.tool()
 async def arm() -> str:
     """Arm the drone motors. Motors will spin but drone stays on ground."""
-    global drone
-    if not drone:
-        return "Not connected. Call connect() first."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.action.arm()
@@ -121,9 +160,8 @@ async def arm() -> str:
 @mcp.tool()
 async def disarm() -> str:
     """Disarm the drone motors."""
-    global drone
-    if not drone:
-        return "Not connected."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.action.disarm()
@@ -135,9 +173,8 @@ async def disarm() -> str:
 @mcp.tool()
 async def is_armed() -> bool:
     """Check if the drone is currently armed."""
-    global drone
-    if not drone:
-        return False
+    err = await _require_connection()
+    if err: return False
     return await drone.telemetry.armed()
 
 
@@ -150,9 +187,8 @@ async def takeoff(altitude_m: float = 10.0) -> str:
     Args:
         altitude_m: Target altitude in meters above takeoff position.
     """
-    global drone
-    if not drone:
-        return "Not connected."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.action.takeoff()
@@ -169,9 +205,8 @@ async def takeoff(altitude_m: float = 10.0) -> str:
 @mcp.tool()
 async def land() -> str:
     """Land at the current position."""
-    global drone
-    if not drone:
-        return "Not connected."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.action.land()
@@ -183,9 +218,8 @@ async def land() -> str:
 @mcp.tool()
 async def return_to_launch() -> str:
     """Return to launch position and land."""
-    global drone
-    if not drone:
-        return "Not connected."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.action.return_to_launch()
@@ -197,9 +231,8 @@ async def return_to_launch() -> str:
 @mcp.tool()
 async def hold() -> str:
     """Hold position (loiter). Stays in current location."""
-    global drone
-    if not drone:
-        return "Not connected."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.action.hold()
@@ -211,9 +244,8 @@ async def hold() -> str:
 @mcp.tool()
 async def emergency_stop() -> str:
     """Kill motors immediately. Drone will drop. Use only in emergencies!"""
-    global drone
-    if not drone:
-        return "Not connected."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.action.kill()
@@ -233,9 +265,8 @@ async def goto_location(lat: float, lon: float, alt_m: float) -> str:
         lon: Target longitude in degrees.
         alt_m: Target altitude AMSL (above mean sea level) in meters.
     """
-    global drone
-    if not drone:
-        return "Not connected."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.action.goto_location(lat, lon, alt_m, 0)
@@ -254,9 +285,8 @@ async def set_velocity(forward_ms: float, right_ms: float, down_ms: float, yaw_d
         down_ms: Down velocity (m/s, positive = down)
         yaw_deg_s: Yaw rate (deg/s, positive = clockwise)
     """
-    global drone
-    if not drone:
-        return "Not connected."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.offboard.set_velocity_body(
@@ -272,9 +302,8 @@ async def set_velocity(forward_ms: float, right_ms: float, down_ms: float, yaw_d
 @mcp.tool()
 async def start_offboard() -> str:
     """Start offboard mode. Required before set_velocity()."""
-    global drone
-    if not drone:
-        return "Not connected."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.offboard.start()
@@ -286,9 +315,8 @@ async def start_offboard() -> str:
 @mcp.tool()
 async def stop_offboard() -> str:
     """Stop offboard mode. Returns control to RC or auto mode."""
-    global drone
-    if not drone:
-        return "Not connected."
+    err = await _require_connection()
+    if err: return err
 
     try:
         await drone.offboard.stop()
@@ -302,9 +330,8 @@ async def stop_offboard() -> str:
 @mcp.tool()
 async def get_telemetry() -> str:
     """Get current drone telemetry: position, attitude, battery, flight mode."""
-    global drone
-    if not drone:
-        return json.dumps({"error": "Not connected"})
+    err = await _require_connection()
+    if err: return json.dumps({"error": err})
 
     try:
         pos = await drone.telemetry.position()
@@ -346,9 +373,8 @@ async def get_telemetry() -> str:
 @mcp.tool()
 async def get_battery() -> str:
     """Get battery voltage and remaining percentage."""
-    global drone
-    if not drone:
-        return json.dumps({"error": "Not connected"})
+    err = await _require_connection()
+    if err: return json.dumps({"error": err})
 
     try:
         bat = await drone.telemetry.battery()
@@ -363,9 +389,8 @@ async def get_battery() -> str:
 @mcp.tool()
 async def get_flight_mode() -> str:
     """Get current flight mode (e.g. 'HOLD', 'OFFBOARD', 'AUTO', etc.)."""
-    global drone
-    if not drone:
-        return json.dumps({"error": "Not connected"})
+    err = await _require_connection()
+    if err: return json.dumps({"error": err})
 
     try:
         mode = await drone.telemetry.flight_mode()
@@ -381,9 +406,8 @@ async def set_flight_mode(mode: str = "HOLD") -> str:
     Args:
         mode: Flight mode name. Case-insensitive.
     """
-    global drone
-    if not drone:
-        return json.dumps({"error": "Not connected"})
+    err = await _require_connection()
+    if err: return json.dumps({"error": err})
 
     mode_upper = mode.upper()
     mode_map = {
@@ -400,7 +424,6 @@ async def set_flight_mode(mode: str = "HOLD") -> str:
         return f"Unknown mode '{mode}'. Available: {modes}"
 
     try:
-        # Set mode through action
         action_map = {
             "hold": drone.action.hold,
             "return_to_launch": drone.action.return_to_launch,
@@ -416,7 +439,7 @@ async def set_flight_mode(mode: str = "HOLD") -> str:
         return f"Set mode failed: {e}"
 
 
-# ─── Mission Management ────────────────────────────────────────────────────
+# ─── Mission Management ─────────────────────────────────────────────────────
 
 @mcp.tool()
 async def upload_mission(waypoints_json: str) -> str:
@@ -426,9 +449,8 @@ async def upload_mission(waypoints_json: str) -> str:
         waypoints_json: JSON array of waypoints, each with lat, lon, alt_m.
            Example: [{"lat": 47.398, "lon": 8.545, "alt_m": 30}]
     """
-    global drone
-    if not drone:
-        return json.dumps({"error": "Not connected"})
+    err = await _require_connection()
+    if err: return json.dumps({"error": err})
 
     try:
         import mavsdk.mission_raw as mission_raw
@@ -464,9 +486,8 @@ async def upload_mission(waypoints_json: str) -> str:
 @mcp.tool()
 async def start_mission() -> str:
     """Start executing the uploaded mission plan."""
-    global drone
-    if not drone:
-        return json.dumps({"error": "Not connected"})
+    err = await _require_connection()
+    if err: return json.dumps({"error": err})
 
     try:
         await drone.mission_raw.start_mission()
@@ -478,15 +499,260 @@ async def start_mission() -> str:
 @mcp.tool()
 async def pause_mission() -> str:
     """Pause the currently executing mission."""
-    global drone
-    if not drone:
-        return json.dumps({"error": "Not connected"})
+    err = await _require_connection()
+    if err: return json.dumps({"error": err})
 
     try:
         await drone.mission_raw.pause_mission()
         return "Mission paused."
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+# ─── Gimbal Control ─────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def gimbal_set_angles(pitch_deg: float = 0.0, yaw_deg: float = 0.0, roll_deg: float = 0.0) -> str:
+    """Set gimbal orientation in degrees.
+
+    Args:
+        pitch_deg: Gimbal pitch (tilt) in degrees. Negative = look down.
+        yaw_deg: Gimbal yaw (pan) in degrees relative to vehicle heading.
+        roll_deg: Gimbal roll in degrees.
+    """
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await drone.gimbal.set_angles(pitch_deg, yaw_deg, roll_deg)
+        return f"Gimbal set to pitch={pitch_deg}°, yaw={yaw_deg}°, roll={roll_deg}°."
+    except Exception as e:
+        return f"Gimbal set_angles failed: {e}"
+
+
+@mcp.tool()
+async def gimbal_take_control() -> str:
+    """Take control of the gimbal. Required before setting angles."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await drone.gimbal.take_control()
+        return "Gimbal control acquired."
+    except Exception as e:
+        return f"Gimbal take_control failed: {e}"
+
+
+@mcp.tool()
+async def gimbal_release_control() -> str:
+    """Release gimbal control back to RC or auto mode."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await drone.gimbal.release_control()
+        return "Gimbal control released."
+    except Exception as e:
+        return f"Gimbal release_control failed: {e}"
+
+
+@mcp.tool()
+async def gimbal_point_at_location(lat: float, lon: float, alt_m: float) -> str:
+    """Point the gimbal at a specific GPS location (ROI mode).
+
+    Args:
+        lat: Target latitude in degrees.
+        lon: Target longitude in degrees.
+        alt_m: Target altitude AMSL in meters.
+    """
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await drone.gimbal.set_roi_location(lat, lon, alt_m)
+        return f"Gimbal pointing at ({lat:.6f}, {lon:.6f}) at {alt_m}m."
+    except Exception as e:
+        return f"Gimbal ROI failed: {e}"
+
+
+@mcp.tool()
+async def gimbal_get_attitude() -> str:
+    """Get current gimbal orientation angles."""
+    err = await _require_connection()
+    if err: return json.dumps({"error": err})
+
+    try:
+        att = await drone.gimbal.get_attitude()
+        return json.dumps({
+            "pitch_deg": att.pitch_deg,
+            "yaw_deg": att.yaw_deg,
+            "roll_deg": att.roll_deg,
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# ─── Camera Control ──────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def camera_take_photo() -> str:
+    """Trigger the camera shutter to take a single photo."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await drone.camera.take_photo()
+        return "Photo taken."
+    except Exception as e:
+        return f"Take photo failed: {e}"
+
+
+@mcp.tool()
+async def camera_start_recording() -> str:
+    """Start video recording."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await drone.camera.start_video()
+        return "Video recording started."
+    except Exception as e:
+        return f"Start recording failed: {e}"
+
+
+@mcp.tool()
+async def camera_stop_recording() -> str:
+    """Stop video recording."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await drone.camera.stop_video()
+        return "Video recording stopped."
+    except Exception as e:
+        return f"Stop recording failed: {e}"
+
+
+@mcp.tool()
+async def camera_set_mode(mode: str = "photo") -> str:
+    """Set camera mode.
+
+    Args:
+        mode: 'photo' or 'video'
+    """
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        from mavsdk.camera import Mode
+        mode_map = {"photo": Mode.PHOTO, "video": Mode.VIDEO}
+        if mode.lower() not in mode_map:
+            return f"Unknown mode '{mode}'. Use 'photo' or 'video'."
+        await drone.camera.set_mode(mode_map[mode.lower()])
+        return f"Camera mode set to {mode}."
+    except Exception as e:
+        return f"Set camera mode failed: {e}"
+
+
+@mcp.tool()
+async def camera_get_mode() -> str:
+    """Get current camera mode (photo or video)."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        from mavsdk.camera import Mode
+        mode = await drone.camera.get_mode()
+        return "photo" if mode == Mode.PHOTO else "video"
+    except Exception as e:
+        return f"Get camera mode failed: {e}"
+
+
+@mcp.tool()
+async def camera_zoom_in() -> str:
+    """Start zooming in."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await drone.camera.zoom_in_start()
+        return "Zooming in..."
+    except Exception as e:
+        return f"Zoom in failed: {e}"
+
+
+@mcp.tool()
+async def camera_zoom_out() -> str:
+    """Start zooming out."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await drone.camera.zoom_out_start()
+        return "Zooming out..."
+    except Exception as e:
+        return f"Zoom out failed: {e}"
+
+
+@mcp.tool()
+async def camera_zoom_stop() -> str:
+    """Stop zooming."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await drone.camera.zoom_stop()
+        return "Zoom stopped."
+    except Exception as e:
+        return f"Zoom stop failed: {e}"
+
+
+@mcp.tool()
+async def camera_get_storage() -> str:
+    """Get camera storage status (used/total space)."""
+    err = await _require_connection()
+    if err: return json.dumps({"error": err})
+
+    try:
+        storage = await drone.camera.get_storage()
+        return json.dumps({
+            "total_bytes": storage.total_bytes,
+            "used_bytes": storage.used_bytes,
+            "free_bytes": storage.available_bytes,
+            "used_pct": round(storage.used_bytes / storage.total_bytes * 100, 1) if storage.total_bytes > 0 else 0,
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# ─── Landing Gear ────────────────────────────────────────────────────────────
+# MAV_CMD_LANDING_GEAR = 210 (0xD2)
+# param1: 1 = deploy (extend/down), 0 = retract (up)
+
+@mcp.tool()
+async def landing_gear_deploy() -> str:
+    """Deploy (extend) landing gear down."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await _send_mavlink_command(command=210, param1=1.0)
+        return "Landing gear deploying (extending down)."
+    except Exception as e:
+        return f"Landing gear deploy failed: {e}"
+
+
+@mcp.tool()
+async def landing_gear_retract() -> str:
+    """Retract landing gear up (in-flight only)."""
+    err = await _require_connection()
+    if err: return err
+
+    try:
+        await _send_mavlink_command(command=210, param1=0.0)
+        return "Landing gear retracting (going up)."
+    except Exception as e:
+        return f"Landing gear retract failed: {e}"
 
 
 # ─── Main ───────────────────────────────────────────────────────────────────
@@ -513,6 +779,8 @@ def main():
     print(f"MAVSDK MCP Server starting...", file=sys.stderr)
     print(f"Transport: {args.transport}", file=sys.stderr)
     print(f"Default connection: {CONNECTION_STRING}", file=sys.stderr)
+    if args.connect:
+        print(f"Overridden connection: {args.connect}", file=sys.stderr)
 
     # Run the MCP server
     mcp.run(transport=args.transport)
