@@ -1,3 +1,5 @@
 mavsdk>=3.0.0
 mcp>=1.0.0
 grpcio>=1.75.0
+uvicorn>=0.30.0
+starlette>=0.37.0

@@ -2,6 +2,8 @@
 
 MAVSDK-only MCP server for **ArduPilot** drone control. No raw MAVLink — all I/O through MAVSDK plugins (`Action`, `MissionRaw`, `Telemetry`).
 
+Integrated with the **SAR stack**: replaces `drone-http` MAVLink on port **3001** so the frontend LLM prompt → gateway → `/v1/apply-tool` uses MAVSDK with param limits.
+
 ## Prerequisites
 
 - Python 3.10+
@@ -10,22 +12,110 @@ MAVSDK-only MCP server for **ArduPilot** drone control. No raw MAVLink — all I
 
 ```bash
 pip install -r requirements.txt
-# or: pip install -e .
 ```
 
-## Run (stdio MCP)
+## SAR stack (recommended — always on)
+
+```bash
+cd /home/jetson/Code
+./sar-stack.sh start proxy    # or: auto | serial
+```
+
+The **drone** tmux window runs `scripts/stack_server.py`:
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| HTTP API | **3001** | Gateway LLM tools + frontend telemetry (`DRONE_SERVER_URL`) |
+| MCP SSE | **8765** | Hermes / Cursor / external MCP clients |
+
+Gateway proxies MCP publicly at:
+
+`https://edge-ai.basilrari.com/mcp/sse`
+
+## Run standalone
+
+**stdio MCP** (Cursor / local):
 
 ```bash
 cd MCP
 python3 server.py
-python3 server.py --connect udpin://0.0.0.0:14550
+```
+
+**SAR-compatible HTTP + MCP SSE** (manual):
+
+```bash
+python3 scripts/stack_server.py --http-port 3001 --connect udpin://0.0.0.0:14550
+```
+
+## Test from frontend chat
+
+With sar-stack running, open the dashboard and try:
+
+- *"Just hover in place for now"*
+- *"What is the drone armed state?"* (informational — may return none)
+- *"Return to home immediately"* (SITL only when safe)
+
+The gateway calls `POST http://127.0.0.1:3001/v1/apply-tool` on edge-ai-MCP (same contract as legacy drone-http).
+
+## Test scripts
+
+```bash
+python3 scripts/test_unit.py
+python3 scripts/test_sitl.py --skip-flight
+```
+
+## External MCP (Hermes)
+
+Public (via Cloudflare tunnel + gateway proxy):
+
+```bash
+# SSE endpoint (after tunnel is up)
+https://edge-ai.basilrari.com/mcp/sse
+```
+
+Local:
+
+```bash
+http://127.0.0.1:8765/sse
+```
+
+**Hermes** (example — adjust to your Hermes version):
+
+```bash
+hermes mcp add edge-drone --url https://edge-ai.basilrari.com/mcp/sse
+```
+
+**MCP Inspector** (local):
+
+```bash
+npx @modelcontextprotocol/inspector python3 server.py
+```
+
+**Cursor** (`~/.cursor/mcp.json` on a machine that can reach the Jetson):
+
+```json
+{
+  "mcpServers": {
+    "edge-ai-drone": {
+      "url": "https://edge-ai.basilrari.com/mcp/sse"
+    }
+  }
+}
+```
+
+Or SSH stdio:
+
+```bash
+hermes mcp add drone --command ssh --args jetson@HOST "cd ~/Code/MCP && python3 server.py"
 ```
 
 ## Environment
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `MAVSDK_CONNECT` | `udpin://0.0.0.0:14550` | Default connection string |
+| `MAVSDK_CONNECT` | `udpin://0.0.0.0:14550` | MAVSDK connection |
+| `MCP_HTTP_PORT` | `3001` | drone-http compatible API |
+| `MCP_SSE_PORT` | `8765` | MCP SSE for external clients |
 | `MCP_MIN_ALT_M` | `2` | Min altitude (m) |
 | `MCP_MAX_ALT_M` | `120` | Max altitude (m) |
 | `MCP_MAX_DISTANCE_M` | `2000` | Max horizontal distance from home (m) |
@@ -46,40 +136,15 @@ python3 server.py --connect udpin://0.0.0.0:14550
 }
 ```
 
-Use MCP tool `upload_mission` or `upload_and_start_mission` with this JSON string.
+Use MCP tool `upload_mission` or dashboard Mission Planner → `POST /v1/mission/upload`.
 
 ## Tools
 
-**Connection:** `connect`, `disconnect`, `is_connected`, `get_link_status`
+**Gateway LLM tools** (via HTTP): `arm`, `takeoff`, `goto_location`, `start_mission`, `hover`, `return_to_home`, `land_immediately`, `mission_interrupt`, `mission_resume`, …
 
-**Flight:** `arm`, `disarm`, `takeoff`, `land`, `return_to_launch`, `hold`, `goto_location`, `pause_and_hold`, `emergency_stop`, offboard velocity helpers
+**MCP tools** (stdio/SSE): full catalog including `connect`, `get_telemetry`, `upload_mission`, gimbal/camera, etc.
 
-**Mission:** `upload_mission`, `upload_and_start_mission`, `clear_mission`, `start_mission`, `pause_mission`, `resume_mission`, `set_mission_current`, `get_mission_progress`
-
-**Telemetry:** `get_telemetry`, `get_battery`, `get_flight_mode`
-
-**Peripherals:** gimbal/camera (if hardware supports MAVSDK plugins)
-
-## Tests
-
-```bash
-python3 scripts/test_unit.py
-# SITL must be on 14550; stop drone-http if it binds the same port
-python3 scripts/test_sitl.py
-python3 scripts/test_sitl.py --skip-flight   # connect-only
-```
-
-## Hermes example
-
-```bash
-hermes mcp add drone --command ssh --args jetson@HOST "cd ~/Code/MCP && python3 server.py"
-```
-
-## Port conflict
-
-Only one process can listen on UDP **14550**. When testing MCP directly, stop `drone-http` in sar-stack or run SITL on another forwarded port.
-
-## Deploy key (Jetson → GitHub)
+## Deploy
 
 ```bash
 git remote -v   # git@github.com-edge-ai-mcp:basilrari/edge-ai-MCP.git
