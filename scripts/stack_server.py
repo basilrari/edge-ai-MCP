@@ -47,7 +47,7 @@ async def run_stack(http_port: int, connect: str) -> None:
 
     http_app = create_http_app()
     mcp = build_mcp()
-    sse_app = mcp.sse_app()
+    sse_app = mcp.sse_app(mount_path=config.MCP_SSE_MOUNT_PATH)
 
     http_cfg = Config(http_app, host="0.0.0.0", port=http_port, log_level="info")
     sse_cfg = Config(sse_app, host=config.MCP_SSE_HOST, port=config.MCP_SSE_PORT, log_level="info")

@@ -7,6 +7,7 @@ CONNECT_TIMEOUT_S = float(os.environ.get("MAVSDK_CONNECT_TIMEOUT_S", "20"))
 MCP_HTTP_PORT = int(os.environ.get("MCP_HTTP_PORT", "3001"))
 MCP_SSE_HOST = os.environ.get("MCP_SSE_HOST", "0.0.0.0")
 MCP_SSE_PORT = int(os.environ.get("MCP_SSE_PORT", "8765"))
+MCP_SSE_MOUNT_PATH = os.environ.get("MCP_SSE_MOUNT_PATH", "/mcp")
 TELEMETRY_POLL_S = float(os.environ.get("MCP_TELEMETRY_POLL_S", "0.2"))
 
 MIN_ALT_M = float(os.environ.get("MCP_MIN_ALT_M", "2"))
