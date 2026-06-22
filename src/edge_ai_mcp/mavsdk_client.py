@@ -42,15 +42,15 @@ async def connect(addr: str | None = None) -> None:
 
     print(f"Connecting to {target}...", file=sys.stderr)
 
-    async with asyncio.timeout(config.CONNECT_TIMEOUT_S):
+    async def _wait_for_link() -> None:
         async for state in _drone.core.connection_state():
             if state.is_connected:
                 break
-
         async for health in _drone.telemetry.health():
             if health.is_global_position_ok or health.is_home_position_ok:
                 break
 
+    await asyncio.wait_for(_wait_for_link(), timeout=config.CONNECT_TIMEOUT_S)
     _connected = True
 
 
@@ -74,9 +74,8 @@ async def home_position() -> tuple[float, float] | None:
     if not is_connected() or _drone is None:
         return None
     try:
-        async with asyncio.timeout(3):
-            home = await _drone.telemetry.home().__anext__()
-            return home.latitude_deg, home.longitude_deg
+        home = await asyncio.wait_for(_drone.telemetry.home().__anext__(), timeout=3)
+        return home.latitude_deg, home.longitude_deg
     except Exception:
         return None
 
