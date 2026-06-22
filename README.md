@@ -1,14 +1,8 @@
 # edge-ai-MCP
 
-MAVSDK-only drone control for **ArduPilot**. No raw MAVLink — all I/O through MAVSDK plugins (`Action`, `MissionRaw`, `Telemetry`).
+MAVSDK-only drone backend for the **SAR stack**. All flight I/O goes through MAVSDK (`Action`, `MissionRaw`, `Telemetry`). No raw MAVLink.
 
-Used by the **SAR stack** on the Jetson: gateway LLM tools and frontend telemetry go through the local HTTP API on port **3001** (`DRONE_SERVER_URL`). External MCP / Hermes / public exposure is **not** enabled (add later if needed).
-
-## Prerequisites
-
-- Python 3.10+
-- `pip install -r requirements.txt`
-- ArduPilot SITL or FC via MAVSDK (default `udpin://0.0.0.0:14550`)
+Used internally by **gateway → frontend LLM** via a drone-http compatible HTTP API on port **3001**.
 
 ## SAR stack (recommended)
 
@@ -19,45 +13,50 @@ cd /home/jetson/Code
 
 The **drone** tmux window runs `scripts/stack_server.py`:
 
-- Listens on **3001** (`/v1/apply-tool`, `/v1/telemetry`, mission upload, WebSockets)
-- Gateway uses `DRONE_SERVER_URL=http://127.0.0.1:3001`
-- Frontend chat → gateway `/infer` → LLM → apply-tool on this service
+| Port | Purpose |
+|------|---------|
+| **3001** | Gateway LLM tools + frontend telemetry (`DRONE_SERVER_URL`) |
 
-## Standalone (dev)
+Flow:
 
-**Gateway-compatible HTTP only:**
-
-```bash
-python3 scripts/stack_server.py --http-port 3001
+```
+Frontend chat → gateway :3000/infer → LLM → POST :3001/v1/apply-tool → MAVSDK → FC
 ```
 
-**stdio MCP** (local Cursor on the Jetson, optional):
+## Prerequisites
 
 ```bash
-python3 server.py
+cd MCP
+pip install -r requirements.txt
 ```
-
-## Tests
-
-```bash
-python3 scripts/test_unit.py
-python3 scripts/test_sitl.py --skip-flight
-```
-
-Stop `drone-http` or any other process on UDP **14550** before direct MCP/MAVSDK tests.
 
 ## Environment
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `MAVSDK_CONNECT` | `udpin://0.0.0.0:14550` | MAVSDK connection |
-| `MCP_HTTP_PORT` | `3001` | Local HTTP API (gateway) |
-| `MCP_MIN_ALT_M` / `MCP_MAX_ALT_M` | `2` / `120` | Altitude limits (m) |
-| `MCP_MAX_DISTANCE_M` | `2000` | Max distance from home (m) |
-| `MCP_MAX_SPEED_M_S` | `15` | Max offboard speed |
-| `MCP_MAX_WAYPOINTS` | `120` | Mission upload cap |
+| `MCP_HTTP_PORT` | `3001` | HTTP API for gateway |
+| `MCP_MIN_ALT_M` | `2` | Min altitude (m) |
+| `MCP_MAX_ALT_M` | `120` | Max altitude (m) |
+| `MCP_MAX_DISTANCE_M` | `2000` | Max horizontal distance from home (m) |
+| `MCP_MAX_SPEED_M_S` | `15` | Max speed for offboard velocity |
+| `MCP_MAX_WAYPOINTS` | `120` | Max waypoints per mission upload |
 
-## Mission JSON (MCP tools / MissionRaw)
+## Test from frontend chat
+
+With sar-stack running, try in the dashboard:
+
+- *"Just hover in place for now"*
+- *"Return to home immediately"* (SITL / when safe)
+
+## Test scripts
+
+```bash
+python3 scripts/test_unit.py
+python3 scripts/test_sitl.py --skip-flight
+```
+
+## Mission upload (dashboard Mission Planner)
 
 ```json
 {
@@ -65,15 +64,24 @@ Stop `drone-http` or any other process on UDP **14550** before direct MCP/MAVSDK
   "takeoff_alt_m": 15,
   "include_rtl": true,
   "waypoints": [
-    {"lat": 23.558, "lon": 120.473, "alt_m": 15}
+    {"lat_deg": 23.558, "lon_deg": 120.473, "alt_m": 15}
   ]
 }
 ```
 
-Dashboard Mission Planner uses `POST /v1/mission/upload` with `lat_deg` / `lon_deg` / `alt_m` waypoints.
+Posted to `POST /v1/mission/upload` (proxied by gateway as `/drone/mission/upload`).
 
-## Git
+## Standalone stdio MCP (optional, local dev only)
+
+Not started by sar-stack. For Cursor/debug on the Jetson:
+
+```bash
+python3 server.py
+```
+
+## Deploy
 
 ```bash
 git remote -v   # git@github.com-edge-ai-mcp:basilrari/edge-ai-MCP.git
+git push -u origin main
 ```

@@ -31,15 +31,10 @@ async def run_stack(http_port: int, connect: str) -> None:
 
     telemetry_cache.start_poller()
 
-    http_app = create_http_app()
-    http_cfg = Config(http_app, host="0.0.0.0", port=http_port, log_level="info")
+    http_cfg = Config(create_http_app(), host="0.0.0.0", port=http_port, log_level="info")
     http_server = Server(http_cfg)
 
-    print(
-        f"edge-ai-mcp stack: HTTP :{http_port} (gateway + frontend only)",
-        file=sys.stderr,
-    )
-
+    print(f"edge-ai-mcp stack: HTTP :{http_port} (gateway/frontend)", file=sys.stderr)
     await http_server.serve()
 
 
