@@ -79,11 +79,15 @@ Local:
 http://127.0.0.1:8765/sse
 ```
 
-**Hermes** (example — adjust to your Hermes version):
+**Hermes** (from your laptop):
 
 ```bash
 hermes mcp add edge-drone --url https://edge-ai.basilrari.com/mcp/sse
 ```
+
+When asked **"Does this server require authentication?"** → answer **`n`** (no API key is configured).
+
+If connect times out, ensure sar-stack is running and the drone window was restarted after the latest MCP update (SSE must advertise `/mcp/messages/`, not `/messages/`).
 
 **MCP Inspector** (local):
 
