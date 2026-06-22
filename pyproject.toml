@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edge-ai-mcp"
+version = "0.2.0"
+description = "MAVSDK-only MCP server for ArduPilot"
+requires-python = ">=3.10"
+dependencies = [
+  "mavsdk>=3.0.0",
+  "mcp>=1.0.0",
+  "grpcio>=1.75.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
