@@ -19,12 +19,153 @@ from .telemetry_cache import get_cache
 from .tool_dispatch import GATEWAY_TOOL_NAMES, apply_gateway_tool, upload_planner_mission
 
 _flight_logs: deque[dict[str, Any]] = deque(maxlen=500)
+_mavlink_msgs: deque[dict[str, Any]] = deque(maxlen=800)
+
+_mavlink_logger_task: asyncio.Task | None = None
 
 
 def push_log(level: str, message: str) -> None:
-    _flight_logs.append(
-        {"ts_ms": int(time.time() * 1000), "level": level, "message": message}
-    )
+    entry = {"ts_ms": int(time.time() * 1000), "level": level, "message": message}
+    _flight_logs.append(entry)
+
+
+
+
+def mavlink_row_from_raw(
+    message_name: str,
+    fields_json: str,
+    *,
+    ts_ms: int,
+    sys_id: int | None = None,
+    comp_id: int | None = None,
+) -> dict[str, Any]:
+    """Shape expected by edge-ai-frontend (msg_id, msg_name, value)."""
+    import json as _json
+
+    msg_id = 0
+    msg_name = message_name or "UNKNOWN"
+    value = fields_json
+    try:
+        fields = _json.loads(fields_json) if isinstance(fields_json, str) else fields_json
+        if isinstance(fields, dict):
+            mid = fields.get("message_id", fields.get("msg_id"))
+            if mid is not None:
+                msg_id = int(mid)
+            msg_name = str(fields.get("message_name", message_name) or message_name)
+            parts: list[str] = []
+            for key in sorted(fields.keys()):
+                if key in ("message_id", "message_name", "msg_id"):
+                    continue
+                parts.append(f"{key}={fields[key]}")
+            if parts:
+                value = " ".join(parts)
+    except Exception:
+        value = str(fields_json)
+    row: dict[str, Any] = {
+        "ts_ms": ts_ms,
+        "msg_id": msg_id,
+        "msg_name": msg_name,
+        "value": value,
+    }
+    if sys_id is not None:
+        row["sys_id"] = sys_id
+    if comp_id is not None:
+        row["comp_id"] = comp_id
+    return row
+
+def push_mavlink_msg(msg: dict[str, Any]) -> None:
+    _mavlink_msgs.append(msg)
+
+
+def log_snapshot() -> dict[str, Any]:
+    return {
+        "type": "snapshot",
+        "flight": list(_flight_logs),
+        "mavlink": list(_mavlink_msgs),
+    }
+
+
+def start_mavlink_logger() -> None:
+    """Subscribe to all incoming MAVLink messages, rate-limited, and store in _mavlink_msgs."""
+    global _mavlink_logger_task
+    if _mavlink_logger_task is not None and not _mavlink_logger_task.done():
+        return  # already running
+
+    async def _capture_loop():
+        while True:
+            try:
+                if not mavsdk_client.is_connected():
+                    await asyncio.sleep(1)
+                    continue
+
+                drone = mavsdk_client.get_drone()
+                md = drone.mavlink_direct
+
+                # Subscribe to specific message types (avoids "all messages" queue backup)
+                WANTED_MESSAGES = [
+                    "HEARTBEAT",
+                    "STATUSTEXT",
+                    "MISSION_CURRENT",
+                    "MISSION_ITEM_REACHED",
+                    "COMMAND_ACK",
+                    "SYS_STATUS",
+                    "BATTERY_STATUS",
+                    "HOME_POSITION",
+                    "AHRS2",
+                    "AHRS",
+                    "EKF_STATUS_REPORT",
+                    "VIBRATION",
+                    "NAV_CONTROLLER_OUTPUT",
+                    "SERVO_OUTPUT_RAW",
+                    "RC_CHANNELS",
+                    "POWER_STATUS",
+                    "MEMINFO",
+                    "EXTENDED_SYS_STATE",
+                    "HWSTATUS",
+                    "TERRAIN_REPORT",
+                    "GLOBAL_POSITION_INT",
+                    "ATTITUDE",
+                    "VFR_HUD",
+                    "GPS_RAW_INT",
+                ]
+
+                async def _subscribe(name: str) -> None:
+                    # Rate limit for high-frequency telemetry messages
+                    high_rate = name in {"ATTITUDE", "VFR_HUD", "AHRS2", "GPS_RAW_INT", "GLOBAL_POSITION_INT"}
+                    last_ts = 0.0
+                    try:
+                        async for raw in md.message(name):
+                            if high_rate:
+                                now = time.time()
+                                if now - last_ts < 1.0:
+                                    continue
+                                last_ts = now
+                            push_mavlink_msg(
+                                mavlink_row_from_raw(
+                                    raw.message_name,
+                                    raw.fields_json,
+                                    ts_ms=int(time.time() * 1000),
+                                    sys_id=raw.system_id,
+                                    comp_id=raw.component_id,
+                                )
+                            )
+                    except Exception:
+                        pass
+
+                # Run all subscriptions concurrently
+                tasks = [asyncio.create_task(_subscribe(n)) for n in WANTED_MESSAGES]
+                await asyncio.gather(*tasks)
+            except Exception:
+                await asyncio.sleep(1)
+
+    _mavlink_logger_task = asyncio.create_task(_capture_loop())
+
+
+def stop_mavlink_logger() -> None:
+    global _mavlink_logger_task
+    if _mavlink_logger_task is not None:
+        _mavlink_logger_task.cancel()
+        _mavlink_logger_task = None
 
 
 def create_http_app() -> Starlette:
@@ -93,12 +234,24 @@ def create_http_app() -> Starlette:
     async def logs(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "entries": list(_flight_logs)})
 
-    async def logs_clear(_: Request) -> JSONResponse:
-        _flight_logs.clear()
+    async def logs_clear(request: Request) -> JSONResponse:
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+        target = body.get("target", "all") if isinstance(body, dict) else "all"
+        if target in ("flight", "all"):
+            _flight_logs.clear()
+        if target in ("mavlink", "all"):
+            _mavlink_msgs.clear()
         return JSONResponse({"ok": True})
 
+    async def logs_snapshot(_: Request) -> JSONResponse:
+        return JSONResponse(log_snapshot())
+
     async def mavlink_logs(_: Request) -> JSONResponse:
-        return JSONResponse({"ok": True, "entries": []})
+        return JSONResponse({"ok": True, "entries": list(_mavlink_msgs)})
 
     async def apply_tool(request: Request) -> JSONResponse:
         try:
@@ -150,10 +303,33 @@ def create_http_app() -> Starlette:
     async def logs_ws(websocket: WebSocket) -> None:
         await websocket.accept()
         try:
+            # Send full snapshot on connect
+            await websocket.send_text(json.dumps(log_snapshot()))
+            last_flight_idx = len(_flight_logs)
+            last_mavlink_idx = len(_mavlink_msgs)
+
             while True:
-                if _flight_logs:
-                    await websocket.send_text(json.dumps(_flight_logs[-1]))
-                await asyncio.sleep(1.0)
+                # Check for new flight log entries
+                current_flight_len = len(_flight_logs)
+                while last_flight_idx < current_flight_len:
+                    entry = list(_flight_logs)[last_flight_idx]
+                    await websocket.send_text(json.dumps({
+                        "type": "flight",
+                        "entry": entry,
+                    }))
+                    last_flight_idx += 1
+
+                # Check for new MAVLink entries
+                current_mavlink_len = len(_mavlink_msgs)
+                while last_mavlink_idx < current_mavlink_len:
+                    entry = list(_mavlink_msgs)[last_mavlink_idx]
+                    await websocket.send_text(json.dumps({
+                        "type": "mavlink",
+                        "entry": entry,
+                    }))
+                    last_mavlink_idx += 1
+
+                await asyncio.sleep(0.2)
         except WebSocketDisconnect:
             return
         except Exception:
@@ -170,6 +346,7 @@ def create_http_app() -> Starlette:
             Route("/v1/logs", logs, methods=["GET"]),
             Route("/v1/logs/clear", logs_clear, methods=["POST"]),
             Route("/v1/logs/mavlink", mavlink_logs, methods=["GET"]),
+            Route("/v1/logs/snapshot", logs_snapshot, methods=["GET"]),
             Route("/v1/apply-tool", apply_tool, methods=["POST"]),
             WebSocketRoute("/v1/ws/telemetry", telemetry_ws),
             WebSocketRoute("/v1/ws/logs", logs_ws),
