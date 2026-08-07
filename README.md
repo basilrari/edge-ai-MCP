@@ -16,11 +16,15 @@ The **drone** tmux window runs `scripts/stack_server.py`:
 | Port | Purpose |
 |------|---------|
 | **3001** | Gateway LLM tools + frontend telemetry (`DRONE_SERVER_URL`) |
+| **8765** | MCP SSE (localhost only; gateway proxies `/mcp/*` with API key) |
 
 Flow:
 
 ```
 Frontend chat → gateway :3000/infer → LLM → POST :3001/v1/apply-tool → MAVSDK → FC
+
+Hermes (external) → https://edge-ai.basilrari.com/mcp
+                 → gateway (Bearer MCP_API_KEY) → 127.0.0.1:8765 → MAVSDK
 ```
 
 ## Prerequisites
@@ -36,6 +40,8 @@ pip install -r requirements.txt
 |----------|---------|---------|
 | `MAVSDK_CONNECT` | `udpin://0.0.0.0:14550` | MAVSDK connection |
 | `MCP_HTTP_PORT` | `3001` | HTTP API for gateway |
+| `MCP_SSE_PORT` | `8765` | MCP SSE (bind `127.0.0.1` only) |
+| `MCP_SSE_MOUNT_PATH` | `/mcp` | SSE path prefix for gateway proxy |
 | `MCP_MIN_ALT_M` | `2` | Min altitude (m) |
 | `MCP_MAX_ALT_M` | `120` | Max altitude (m) |
 | `MCP_MAX_DISTANCE_M` | `2000` | Max horizontal distance from home (m) |
@@ -70,6 +76,41 @@ python3 scripts/test_sitl.py --skip-flight
 ```
 
 Posted to `POST /v1/mission/upload` (proxied by gateway as `/drone/mission/upload`).
+
+## Public MCP for Hermes (optional)
+
+Set `MCP_API_KEY` in `sar-stack.env` and restart the stack. The gateway exposes:
+
+- `GET/POST https://edge-ai.basilrari.com/mcp` — streamable HTTP (Hermes; requires auth)
+- `GET https://edge-ai.basilrari.com/mcp/sse` — legacy SSE (requires auth)
+- `POST https://edge-ai.basilrari.com/mcp/messages/` — MCP messages (requires auth)
+
+**Auth:** `Authorization: Bearer <MCP_API_KEY>` or header `X-API-Key: <MCP_API_KEY>`.
+
+### Cloudflare (your account)
+
+If you already have a tunnel pointing **edge-ai.basilrari.com → localhost:3000** (gateway), you do **not** need a new tunnel, DNS record, or ingress rule. MCP is served on the same hostname under `/mcp/*`.
+
+Optional hardening in the Cloudflare dashboard:
+
+1. **Zero Trust → Access** — not required; API key is enforced by the gateway.
+2. **Security → WAF** — optional rate limit on path `/mcp/*` to reduce abuse.
+3. Keep the tunnel config unchanged unless you moved the gateway port.
+
+### Hermes
+
+1. Add MCP server URL: `https://edge-ai.basilrari.com/mcp` (not `/mcp/sse`)
+2. Transport: SSE
+3. Authentication: yes — paste the same `MCP_API_KEY` from `sar-stack.env`
+
+Verify:
+
+```bash
+curl -sS -N -H "Authorization: Bearer $MCP_API_KEY" \
+  https://edge-ai.basilrari.com/mcp/sse | head -5
+```
+
+You should see an `event: endpoint` line within a few seconds.
 
 ## Standalone stdio MCP (optional, local dev only)
 
