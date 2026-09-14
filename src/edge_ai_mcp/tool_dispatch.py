@@ -18,16 +18,16 @@ GATEWAY_TOOL_NAMES: tuple[str, ...] = (
     "set_mode_guided",
     "takeoff",
     "start_mission",
-    "mission_set_current",
+    "set_current_waypoint",
     "goto_location",
     "move_forward",
     "hover",
     "return_to_home",
-    "land_immediately",
+    "land",
     "circle_search",
     "retry_streams",
-    "mission_interrupt",
-    "mission_resume",
+    "pause",
+    "resume",
     "waypoint_inject",
 )
 
@@ -88,10 +88,10 @@ async def apply_gateway_tool(tool: str, params: Any = None) -> None:
         await mission.start_mission()
         return
 
-    if tool == "mission_set_current":
+    if tool == "set_current_waypoint":
         seq = p.get("seq")
         if seq is None:
-            raise RuntimeError("mission_set_current requires params.seq")
+            raise RuntimeError("set_current_waypoint requires params.seq")
         await mission.set_current_mission_item(int(seq))
         return
 
@@ -129,16 +129,16 @@ async def apply_gateway_tool(tool: str, params: Any = None) -> None:
         await action.return_to_launch()
         return
 
-    if tool == "land_immediately":
+    if tool == "land":
         await action.land()
         return
 
-    if tool == "mission_interrupt":
+    if tool == "pause":
         await mission.pause_mission()
         await action.hold()
         return
 
-    if tool == "mission_resume":
+    if tool == "resume":
         await mission.start_mission()
         return
 
